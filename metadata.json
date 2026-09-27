@@ -1,0 +1,6 @@
+{
+  "name": "4 Cousins Togetherness",
+  "description": "Real-time family financial contribution tracker with receipt scanner powered by Gemini AI and live ledger.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

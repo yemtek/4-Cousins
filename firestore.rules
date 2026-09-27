@@ -1,0 +1,27 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Contributions can be read by anyone (public family ledger)
+    match /contributions/{contributionId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
+    // App settings (currency, categories, etc.)
+    match /settings/{settingId} {
+      allow read, write: if true;
+    }
+
+    // Disbursements / fund removals with reasons
+    match /disbursements/{disbursementId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
+    // Broadcast notifications to all members on web/mobile
+    match /notifications/{notificationId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+  }
+}

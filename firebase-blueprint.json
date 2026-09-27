@@ -1,0 +1,86 @@
+{
+  "entities": {
+    "Contribution": {
+      "title": "Contribution",
+      "description": "A payment contribution made to the 4 Cousins Togetherness family fund.",
+      "type": "object",
+      "properties": {
+        "contributorName": { "type": "string", "maxLength": 128 },
+        "amount": { "type": "number" },
+        "currency": { "type": "string", "maxLength": 10 },
+        "date": { "type": "string", "maxLength": 32 },
+        "time": { "type": "string", "maxLength": 32 },
+        "category": { "type": "string", "maxLength": 64 },
+        "paymentMethod": { "type": "string", "maxLength": 64 },
+        "referenceNumber": { "type": "string", "maxLength": 128 },
+        "receiptNote": { "type": "string", "maxLength": 256 },
+        "receiptImageUrl": { "type": "string" },
+        "receiptHash": { "type": "string", "maxLength": 128 },
+        "verifiedByAdmin": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["contributorName", "amount", "currency", "date"]
+    },
+    "Disbursement": {
+      "title": "Disbursement",
+      "description": "An authorized fund removal from the family fund with stated reason.",
+      "type": "object",
+      "properties": {
+        "amount": { "type": "number" },
+        "currency": { "type": "string", "maxLength": 10 },
+        "reason": { "type": "string", "maxLength": 512 },
+        "category": { "type": "string", "maxLength": 64 },
+        "recipientName": { "type": "string", "maxLength": 128 },
+        "approvedByAdmin": { "type": "string", "maxLength": 64 },
+        "date": { "type": "string", "maxLength": 32 },
+        "time": { "type": "string", "maxLength": 32 },
+        "referenceNumber": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["amount", "currency", "reason", "recipientName", "date"]
+    },
+    "AppNotification": {
+      "title": "AppNotification",
+      "description": "Broadcast alerts to all family members for contributions and disbursements.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "maxLength": 128 },
+        "message": { "type": "string", "maxLength": 512 },
+        "type": { "type": "string", "enum": ["contribution", "disbursement", "system"] },
+        "amount": { "type": "number" },
+        "currency": { "type": "string", "maxLength": 10 },
+        "contributorOrRecipient": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["title", "message", "type", "timestamp"]
+    },
+    "Settings": {
+      "title": "Settings",
+      "description": "General settings for the application including primary currency and categories.",
+      "type": "object",
+      "properties": {
+        "primaryCurrency": { "type": "string", "maxLength": 10 },
+        "categories": { "type": "array" }
+      }
+    }
+  },
+  "firestore": {
+    "/contributions/{contributionId}": {
+      "schema": { "$ref": "#/entities/Contribution" },
+      "description": "Collection of recorded family financial contributions."
+    },
+    "/disbursements/{disbursementId}": {
+      "schema": { "$ref": "#/entities/Disbursement" },
+      "description": "Collection of authorized fund disbursements and expenditures."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/AppNotification" },
+      "description": "Broadcast notifications for contributions and disbursements."
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/Settings" },
+      "description": "Application settings (primary currency and categories)."
+    }
+  }
+}
