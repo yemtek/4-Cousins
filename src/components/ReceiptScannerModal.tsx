@@ -15,11 +15,15 @@ import {
   RefreshCw,
   X,
   ShieldAlert,
+  Key,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { ParseReceiptResult, Contribution, AppSettings } from '../types';
 import { addContribution, checkDuplicatePayment, computeReceiptHash } from '../contributionService';
 import { parseReceiptWithClientGemini } from '../geminiClient';
+
+// Primary live backend URL where the Gemini AI model is deployed
+const LIVE_BACKEND_URL = 'https://ais-pre-zbwn4ayxntjmy4zfl3cbej-802933229190.europe-west2.run.app';
 
 // Sample receipts helper to allow rapid testing with realistic Nigerian / International receipts
 const SAMPLE_RECEIPTS = [
@@ -59,10 +63,10 @@ const SAMPLE_RECEIPTS = [
       amount: 300,
       currency: 'USD',
       date: '2026-09-27',
-      time: '11:15',
-      paymentMethod: 'Sendwave / Wire Transfer',
-      referenceNumber: 'SW-0044919',
-      confidenceNotes: 'Diaspora family contribution from Cousin Emeka.',
+      time: '11:10',
+      paymentMethod: 'Wire / Diaspora Transfer',
+      referenceNumber: 'WIRE-889021',
+      confidenceNotes: 'Diaspora wire receipt verified for $300.00.',
     },
   },
 ];
@@ -81,15 +85,17 @@ export const ReceiptScannerModal: React.FC<ReceiptScannerModalProps> = ({
   settings,
 }) => {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [imageHash, setImageHash] = useState<string>('');
-  const [mimeType, setMimeType] = useState<string>('image/jpeg');
+  const [mimeType, setMimeType] = useState('image/jpeg');
+  const [imageHash, setImageHash] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [aiAnalysisNotes, setAiAnalysisNotes] = useState<string>('');
-  const [errorMessage, setErrorMessage] = useState<string>('');
-  const [duplicateWarning, setDuplicateWarning] = useState<string>('');
+  const [errorMessage, setErrorMessage] = useState('');
+  const [duplicateWarning, setDuplicateWarning] = useState('');
+  const [aiAnalysisNotes, setAiAnalysisNotes] = useState('');
+  const [customApiKey, setCustomApiKey] = useState(() => localStorage.getItem('4cousins_gemini_key') || '');
+  const [showKeyInput, setShowKeyInput] = useState(false);
 
-  // Editable Form State
+  // Form Fields
   const [contributorName, setContributorName] = useState('');
   const [amount, setAmount] = useState<number | string>('');
   const [currency, setCurrency] = useState(settings.primaryCurrency || 'NGN');
@@ -142,7 +148,9 @@ export const ReceiptScannerModal: React.FC<ReceiptScannerModalProps> = ({
     setIsAnalyzing(true);
     setErrorMessage('');
     let parsed: ParseReceiptResult | null = null;
+    let lastError = '';
 
+    // Step 1: Try relative path /api/parse-receipt (works on main host & Netlify proxy)
     try {
       const response = await fetch('/api/parse-receipt', {
         method: 'POST',
@@ -159,16 +167,43 @@ export const ReceiptScannerModal: React.FC<ReceiptScannerModalProps> = ({
           parsed = json.data;
         }
       }
-    } catch {
-      // Continue to fallback
+    } catch (e: any) {
+      console.warn('Relative /api/parse-receipt fetch notice:', e);
     }
 
-    // If server route is not available (e.g., pure static Netlify hosting), use direct client Gemini
+    // Step 2: If relative path failed (e.g. Netlify without proxy reload), call Cloud Run backend directly with CORS
     if (!parsed) {
       try {
-        parsed = await parseReceiptWithClientGemini(imgData, type);
+        const response = await fetch(`${LIVE_BACKEND_URL}/api/parse-receipt`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            imageBase64: imgData,
+            mimeType: type,
+          }),
+        });
+
+        if (response.ok) {
+          const json = await response.json();
+          if (json.success && json.data) {
+            parsed = json.data;
+          }
+        }
+      } catch (e: any) {
+        console.warn('Direct live backend fetch notice:', e);
+      }
+    }
+
+    // Step 3: Fallback to direct client-side Gemini if provided
+    if (!parsed) {
+      try {
+        parsed = await parseReceiptWithClientGemini(imgData, type, customApiKey);
       } catch (clientErr: any) {
+        lastError = clientErr?.message || '';
         console.warn('Gemini client parse fallback:', clientErr);
+        if (lastError.includes('API key') || lastError.includes('configured')) {
+          setShowKeyInput(true);
+        }
       }
     }
 
@@ -181,7 +216,6 @@ export const ReceiptScannerModal: React.FC<ReceiptScannerModalProps> = ({
       if (parsed.contributorName) setContributorName(parsed.contributorName);
       if (parsed.amount) setAmount(parsed.amount);
       if (parsed.currency) {
-        // Normalize currency
         let curr = parsed.currency.toUpperCase();
         if (curr === 'NAIRA' || curr === '₦') curr = 'NGN';
         setCurrency(curr);
@@ -199,7 +233,6 @@ export const ReceiptScannerModal: React.FC<ReceiptScannerModalProps> = ({
       }
       if (parsed.confidenceNotes) setAiAnalysisNotes(parsed.confidenceNotes);
     } catch (err: any) {
-      console.warn('AI Parsing notice:', err);
       setErrorMessage(
         err.message || 'Gemini extraction encountered an error. You can fill or edit the fields below manually.'
       );
@@ -249,61 +282,65 @@ export const ReceiptScannerModal: React.FC<ReceiptScannerModalProps> = ({
         return;
       }
 
-      const newEntry: Omit<Contribution, 'id'> = {
+      await addContribution({
         contributorName: contributorName.trim(),
         amount: numAmount,
-        currency: currency.trim() || settings.primaryCurrency || 'NGN',
-        date: date || new Date().toISOString().split('T')[0],
-        time: time || '12:00',
-        category: category.trim(),
-        paymentMethod: paymentMethod.trim(),
+        currency,
+        date,
+        time,
+        category,
+        paymentMethod,
         referenceNumber: referenceNumber.trim(),
         receiptNote: receiptNote.trim(),
         receiptImageUrl: selectedImage || '',
         receiptHash: imageHash,
         verifiedByAdmin: true,
-      };
-
-      await addContribution(newEntry);
+      });
 
       confetti({
-        particleCount: 90,
+        particleCount: 80,
         spread: 70,
         origin: { y: 0.6 },
-        colors: ['#047857', '#F59E0B', '#10B981', '#B45309'],
       });
 
       onSuccess();
       onClose();
     } catch (err: any) {
-      console.error('Save contribution error:', err);
-      setErrorMessage('Failed to save to Firestore database. Please try again.');
+      console.error('Failed to commit contribution:', err);
+      setErrorMessage(
+        err?.message || 'Failed to save entry to database. Please check your internet connection.'
+      );
     } finally {
       setIsSubmitting(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-stone-950/70 backdrop-blur-xs overflow-y-auto">
-      <div className="bg-white rounded-3xl max-w-4xl w-full p-5 sm:p-7 shadow-2xl border border-stone-200 relative my-6 max-h-[92vh] flex flex-col">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-stone-950/70 backdrop-blur-xs animate-in fade-in">
+      <div className="bg-white rounded-3xl max-w-4xl w-full max-h-[92vh] flex flex-col p-5 sm:p-7 shadow-2xl border border-stone-200">
         {/* Header */}
-        <div className="flex items-center justify-between pb-4 border-b border-stone-100 shrink-0">
+        <div className="flex items-center justify-between pb-4 border-b border-stone-200">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-700 flex items-center justify-center font-bold">
-              <Sparkles className="w-5 h-5 text-amber-600" />
+            <div className="w-11 h-11 rounded-2xl bg-amber-100 text-amber-800 flex items-center justify-center">
+              <Sparkles className="w-6 h-6 text-amber-700" />
             </div>
             <div>
-              <h2 className="text-xl sm:text-2xl font-bold text-stone-900 font-serif-display">
-                Upload & AI Parse Payment Slip
-              </h2>
-              <p className="text-xs sm:text-sm text-stone-500">
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg sm:text-xl font-bold font-serif-display text-stone-900">
+                  Scan & Verify Payment Receipt
+                </h2>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 uppercase tracking-wider">
+                  Gemini OCR
+                </span>
+              </div>
+              <p className="text-xs text-stone-500">
                 Security-hardened: prevents duplicate uploads & notifies all family members in real-time.
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="text-stone-400 hover:text-stone-700 p-2 rounded-xl hover:bg-stone-100 transition"
+            className="text-stone-400 hover:text-stone-700 p-2 rounded-xl hover:bg-stone-100 transition cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -330,6 +367,40 @@ export const ReceiptScannerModal: React.FC<ReceiptScannerModalProps> = ({
             </div>
           )}
 
+          {/* Optional Netlify Gemini API Key input for static deployments */}
+          {showKeyInput && (
+            <div className="p-3.5 bg-amber-50/80 border border-amber-300 rounded-xl space-y-2 text-xs text-stone-700">
+              <div className="flex items-center gap-2 font-bold text-amber-900">
+                <Key className="w-4 h-4 text-amber-700" />
+                <span>Netlify Static Hosting Gemini Key</span>
+              </div>
+              <p className="text-[11px] text-stone-600">
+                Since Netlify serves static client files without a Node server backend, enter your Gemini API key once to power client-side OCR:
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  placeholder="Paste AI Studio / Gemini API Key..."
+                  value={customApiKey}
+                  onChange={(e) => {
+                    setCustomApiKey(e.target.value);
+                    localStorage.setItem('4cousins_gemini_key', e.target.value);
+                  }}
+                  className="flex-1 px-3 py-1.5 rounded-lg border border-stone-300 bg-white text-xs font-mono"
+                />
+                {selectedImage && (
+                  <button
+                    type="button"
+                    onClick={() => triggerGeminiAnalysis(selectedImage, mimeType)}
+                    className="px-3 py-1.5 bg-amber-700 hover:bg-amber-800 text-white rounded-lg text-xs font-bold transition cursor-pointer"
+                  >
+                    Retry Scan
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-12 gap-5">
             {/* Upload Area */}
             <div className="md:col-span-5 flex flex-col space-y-3">
@@ -338,302 +409,266 @@ export const ReceiptScannerModal: React.FC<ReceiptScannerModalProps> = ({
               </label>
 
               <label
-                className={`relative border-2 border-dashed rounded-2xl p-4 sm:p-6 flex flex-col items-center justify-center text-center cursor-pointer transition-all duration-200 ${
+                htmlFor="receipt-file-input"
+                className={`flex flex-col items-center justify-center p-6 border-2 border-dashed rounded-2xl cursor-pointer transition ${
                   selectedImage
-                    ? 'border-amber-400 bg-amber-50/30'
-                    : 'border-stone-300 hover:border-amber-500 bg-stone-50/50 hover:bg-stone-50'
+                    ? 'border-amber-400 bg-amber-50/20'
+                    : 'border-stone-300 hover:border-amber-500 bg-stone-50/50'
                 }`}
               >
-                <input
-                  type="file"
-                  onChange={handleFileChange}
-                  accept="image/*"
-                  className="hidden"
-                />
-
                 {selectedImage ? (
-                  <div className="w-full flex flex-col items-center">
+                  <div className="space-y-3 text-center">
                     <img
                       src={selectedImage}
-                      alt="Receipt preview"
-                      className="max-h-52 w-auto object-contain rounded-lg shadow-sm border border-stone-200"
+                      alt="Uploaded Receipt"
+                      className="max-h-56 mx-auto rounded-xl shadow-xs object-contain"
                     />
-                    <div className="mt-3 flex items-center gap-2 text-xs font-semibold text-amber-800 bg-amber-100 px-3 py-1 rounded-full">
-                      <FileCheck className="w-3.5 h-3.5" /> Slip Loaded & Hashed
+                    <div className="text-xs font-semibold text-amber-800 flex items-center justify-center gap-1.5">
+                      <FileCheck className="w-4 h-4 text-emerald-600" />
+                      <span>Click to choose different image</span>
                     </div>
-                    <p className="text-[11px] text-stone-400 mt-1">Tap to select another</p>
                   </div>
                 ) : (
-                  <div className="py-6 flex flex-col items-center">
-                    <div className="w-14 h-14 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center mb-3">
-                      <UploadCloud className="w-7 h-7" />
+                  <div className="text-center space-y-2 py-4">
+                    <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mx-auto">
+                      <UploadCloud className="w-6 h-6" />
                     </div>
-                    <p className="text-sm font-semibold text-stone-800">
-                      Tap or Drop Receipt Slip
-                    </p>
-                    <p className="text-xs text-stone-500 mt-1">
-                      OPAY, GTBank, Zenith, Access, Kuda, Wire, or Transfer receipt
-                    </p>
-                    <span className="mt-3 inline-flex items-center text-xs font-medium text-amber-700 bg-amber-50 px-3 py-1 rounded-md border border-amber-200">
-                      Browse Photos / Slips
+                    <span className="block text-sm font-semibold text-stone-800">
+                      Tap or drop payment receipt
+                    </span>
+                    <span className="block text-[11px] text-stone-400">
+                      Supports OPAY, GTBank, Kuda, Moniepoint, Zenith, Mobile Money
                     </span>
                   </div>
                 )}
+                <input
+                  id="receipt-file-input"
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
               </label>
 
-              {/* Sample receipts */}
-              <div className="pt-1">
-                <span className="text-[11px] font-semibold text-stone-500 uppercase tracking-wide block mb-1.5">
-                  Or test with sample receipt:
+              {/* Sample test receipts */}
+              <div className="pt-2">
+                <span className="text-[11px] font-semibold text-stone-500 block mb-1.5">
+                  Or test with sample bank slips:
                 </span>
-                <div className="flex flex-col gap-1.5">
+                <div className="space-y-1.5">
                   {SAMPLE_RECEIPTS.map((s, idx) => (
                     <button
                       key={idx}
                       type="button"
                       onClick={() => loadSampleReceipt(s)}
-                      className="text-left text-xs px-2.5 py-1.5 rounded-lg border border-stone-200 hover:border-amber-400 bg-white hover:bg-amber-50/50 text-stone-700 font-medium flex items-center justify-between transition"
+                      className="w-full text-left text-xs p-2 rounded-xl border border-stone-200 hover:border-amber-400 bg-white hover:bg-amber-50/30 transition text-stone-700 flex items-center justify-between cursor-pointer"
                     >
                       <span className="truncate">{s.name}</span>
-                      <span className="text-amber-700 font-bold ml-1 shrink-0">Try →</span>
+                      <span className="text-[10px] text-amber-700 font-bold ml-1 shrink-0">
+                        Load
+                      </span>
                     </button>
                   ))}
                 </div>
               </div>
 
+              {/* AI Scan button */}
               {selectedImage && (
                 <button
                   type="button"
                   onClick={() => triggerGeminiAnalysis(selectedImage, mimeType)}
                   disabled={isAnalyzing}
-                  className="w-full mt-2 py-2 px-3 text-xs font-semibold rounded-xl bg-amber-50 text-amber-900 border border-amber-200 hover:bg-amber-100 flex items-center justify-center gap-1.5 transition"
+                  className="w-full py-2.5 px-4 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition disabled:opacity-50 cursor-pointer"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isAnalyzing ? 'animate-spin' : ''}`} />
-                  Re-analyze Slip with Gemini
+                  <span>{isAnalyzing ? 'Scanning with Gemini OCR...' : 'Re-scan with Gemini AI'}</span>
                 </button>
               )}
             </div>
 
             {/* Verification Form */}
-            <div className="md:col-span-7 flex flex-col bg-stone-50/70 p-4 sm:p-5 rounded-2xl border border-stone-200/80">
+            <div className="md:col-span-7 bg-stone-50/60 rounded-2xl p-4 sm:p-5 border border-stone-200">
               <div className="flex items-center justify-between mb-3">
-                <label className="text-xs font-bold uppercase tracking-wider text-stone-600 flex items-center gap-1.5">
-                  <FileCheck className="w-4 h-4 text-emerald-600" />
-                  2. Verify Extracted Details Before Saving
+                <label className="text-xs font-bold uppercase tracking-wider text-stone-500">
+                  2. Review & Confirm Contribution
                 </label>
-                {isAnalyzing && (
-                  <span className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-100 px-2 py-0.5 rounded-md font-semibold animate-pulse">
-                    <Sparkles className="w-3.5 h-3.5" /> AI Parsing...
+                {aiAnalysisNotes && (
+                  <span className="text-[11px] text-emerald-700 font-semibold flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>AI auto-extracted</span>
                   </span>
                 )}
               </div>
 
               {aiAnalysisNotes && (
-                <div className="mb-3 text-xs bg-emerald-50 border border-emerald-200 text-emerald-800 p-2.5 rounded-xl flex items-start gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                  <div>
-                    <strong className="font-semibold">AI Detection Summary:</strong>{' '}
-                    <span>{aiAnalysisNotes}</span>
-                  </div>
+                <div className="p-2.5 mb-3 bg-white rounded-xl border border-emerald-200 text-xs text-stone-700 flex items-start gap-2">
+                  <Sparkles className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
+                  <span>{aiAnalysisNotes}</span>
                 </div>
               )}
 
-              <form onSubmit={handleSaveVerifiedEntry} className="space-y-3.5 flex-1">
+              <form onSubmit={handleSaveVerifiedEntry} className="space-y-3.5">
                 {/* Contributor Name */}
                 <div>
-                  <label className="block text-xs font-bold text-stone-700 mb-1">
-                    Contributor's Full Name *
+                  <label className="block text-xs font-semibold text-stone-700 mb-1 flex items-center gap-1.5">
+                    <User className="w-3.5 h-3.5 text-stone-400" />
+                    <span>Contributor / Cousin Name *</span>
                   </label>
-                  <div className="relative">
-                    <User className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. Babatunde Adeleke"
-                      value={contributorName}
-                      onChange={(e) => setContributorName(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2 bg-white text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium text-stone-900"
-                    />
-                  </div>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Benard Ayodele Gbadebo"
+                    value={contributorName}
+                    onChange={(e) => setContributorName(e.target.value)}
+                    className="w-full px-3 py-2 text-xs sm:text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                  />
                 </div>
 
                 {/* Amount & Currency */}
-                <div className="grid grid-cols-12 gap-3">
-                  <div className="col-span-7">
-                    <label className="block text-xs font-bold text-stone-700 mb-1">
-                      Contribution Amount *
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-stone-700 mb-1 flex items-center gap-1.5">
+                      <DollarSign className="w-3.5 h-3.5 text-stone-400" />
+                      <span>Amount *</span>
                     </label>
-                    <div className="relative">
-                      <DollarSign className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                      <input
-                        type="number"
-                        step="any"
-                        required
-                        placeholder="0.00"
-                        value={amount}
-                        onChange={(e) => setAmount(e.target.value)}
-                        className="w-full pl-9 pr-3 py-2 bg-white text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 font-bold text-stone-900"
-                      />
-                    </div>
+                    <input
+                      type="number"
+                      required
+                      min="1"
+                      step="any"
+                      placeholder="e.g. 15000"
+                      value={amount}
+                      onChange={(e) => setAmount(e.target.value)}
+                      className="w-full px-3 py-2 text-xs sm:text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white font-mono font-bold"
+                    />
                   </div>
 
-                  <div className="col-span-5">
-                    <label className="block text-xs font-bold text-stone-700 mb-1">
+                  <div>
+                    <label className="block text-xs font-semibold text-stone-700 mb-1">
                       Currency
                     </label>
                     <select
                       value={currency}
                       onChange={(e) => setCurrency(e.target.value)}
-                      className="w-full py-2 px-3 bg-white text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 font-semibold text-stone-900"
+                      className="w-full px-3 py-2 text-xs sm:text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
                     >
-                      <option value="NGN">NGN (₦ Naira)</option>
-                      <option value="USD">USD ($ Dollar)</option>
-                      <option value="GBP">GBP (£ Pound)</option>
-                      <option value="EUR">EUR (€ Euro)</option>
-                      <option value="KES">KES (KSh)</option>
-                      <option value="CAD">CAD (C$)</option>
-                      <option value="GHS">GHS (GH₵)</option>
+                      <option value="NGN">NGN (₦ - Nigerian Naira)</option>
+                      <option value="USD">USD ($ - US Dollar)</option>
+                      <option value="GBP">GBP (£ - British Pound)</option>
+                      <option value="EUR">EUR (€ - Euro)</option>
+                      <option value="KES">KES (KSh - Kenyan Shilling)</option>
+                      <option value="CAD">CAD (C$ - Canadian Dollar)</option>
                     </select>
-                  </div>
-                </div>
-
-                {/* Date & Time */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold text-stone-700 mb-1">
-                      Transaction Date *
-                    </label>
-                    <div className="relative">
-                      <Calendar className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                      <input
-                        type="date"
-                        required
-                        value={date}
-                        onChange={(e) => setDate(e.target.value)}
-                        className="w-full pl-9 pr-2 py-2 bg-white text-xs sm:text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium text-stone-800"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-stone-700 mb-1">
-                      Transaction Time
-                    </label>
-                    <div className="relative">
-                      <Clock className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                      <input
-                        type="time"
-                        value={time}
-                        onChange={(e) => setTime(e.target.value)}
-                        className="w-full pl-9 pr-2 py-2 bg-white text-xs sm:text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium text-stone-800"
-                      />
-                    </div>
                   </div>
                 </div>
 
                 {/* Category & Payment Method */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-xs font-bold text-stone-700 mb-1">
-                      Contribution Category
+                    <label className="block text-xs font-semibold text-stone-700 mb-1 flex items-center gap-1.5">
+                      <Tag className="w-3.5 h-3.5 text-stone-400" />
+                      <span>Category</span>
                     </label>
-                    <div className="relative">
-                      <Tag className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                      <select
-                        value={category}
-                        onChange={(e) => setCategory(e.target.value)}
-                        className="w-full pl-9 pr-2 py-2 bg-white text-xs sm:text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 text-stone-800"
-                      >
-                        {settings.categories.map((cat) => (
-                          <option key={cat} value={cat}>
-                            {cat}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                    <select
+                      value={category}
+                      onChange={(e) => setCategory(e.target.value)}
+                      className="w-full px-3 py-2 text-xs sm:text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                    >
+                      {settings.categories.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </select>
                   </div>
 
                   <div>
-                    <label className="block text-xs font-bold text-stone-700 mb-1">
-                      Payment Channel
-                    </label>
-                    <div className="relative">
-                      <CreditCard className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                      <input
-                        type="text"
-                        placeholder="OPAY, GTBank, Transfer"
-                        value={paymentMethod}
-                        onChange={(e) => setPaymentMethod(e.target.value)}
-                        className="w-full pl-9 pr-2 py-2 bg-white text-xs sm:text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 text-stone-800"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Reference Number & Security duplicate check */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold text-stone-700 mb-1">
-                      Reference / Session ID
-                    </label>
-                    <div className="relative">
-                      <Hash className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                      <input
-                        type="text"
-                        placeholder="e.g. 090264188219"
-                        value={referenceNumber}
-                        onChange={async (e) => {
-                          const val = e.target.value;
-                          setReferenceNumber(val);
-                          if (val.length > 3) {
-                            const chk = await checkDuplicatePayment(val, imageHash);
-                            if (chk.isDuplicate) {
-                              setDuplicateWarning(chk.reason || 'Duplicate payment reference found');
-                            } else {
-                              setDuplicateWarning('');
-                            }
-                          }
-                        }}
-                        className="w-full pl-9 pr-2 py-2 bg-white text-xs sm:text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 text-stone-800 font-mono"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-stone-700 mb-1">
-                      Note / Memo
+                    <label className="block text-xs font-semibold text-stone-700 mb-1 flex items-center gap-1.5">
+                      <CreditCard className="w-3.5 h-3.5 text-stone-400" />
+                      <span>Payment Method</span>
                     </label>
                     <input
                       type="text"
-                      placeholder="Optional memo"
-                      value={receiptNote}
-                      onChange={(e) => setReceiptNote(e.target.value)}
-                      className="w-full px-3 py-2 bg-white text-xs sm:text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 text-stone-800"
+                      placeholder="e.g. OPAY, GTBank, Transfer"
+                      value={paymentMethod}
+                      onChange={(e) => setPaymentMethod(e.target.value)}
+                      className="w-full px-3 py-2 text-xs sm:text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
                     />
                   </div>
                 </div>
 
+                {/* Date & Time */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-stone-700 mb-1 flex items-center gap-1.5">
+                      <Calendar className="w-3.5 h-3.5 text-stone-400" />
+                      <span>Date</span>
+                    </label>
+                    <input
+                      type="date"
+                      required
+                      value={date}
+                      onChange={(e) => setDate(e.target.value)}
+                      className="w-full px-3 py-2 text-xs sm:text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-stone-700 mb-1 flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-stone-400" />
+                      <span>Time</span>
+                    </label>
+                    <input
+                      type="time"
+                      value={time}
+                      onChange={(e) => setTime(e.target.value)}
+                      className="w-full px-3 py-2 text-xs sm:text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                    />
+                  </div>
+                </div>
+
+                {/* Reference Number */}
+                <div>
+                  <label className="block text-xs font-semibold text-stone-700 mb-1 flex items-center gap-1.5">
+                    <Hash className="w-3.5 h-3.5 text-stone-400" />
+                    <span>Transaction Reference / Session ID</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 100004260927181050172558991689"
+                    value={referenceNumber}
+                    onChange={(e) => {
+                      setReferenceNumber(e.target.value);
+                      setDuplicateWarning('');
+                    }}
+                    className="w-full px-3 py-2 text-xs sm:text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white font-mono"
+                  />
+                </div>
+
+                {/* Receipt Note */}
+                <div>
+                  <label className="block text-xs font-semibold text-stone-700 mb-1">
+                    Optional Note / Description
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. September dues contribution"
+                    value={receiptNote}
+                    onChange={(e) => setReceiptNote(e.target.value)}
+                    className="w-full px-3 py-2 text-xs sm:text-sm rounded-xl border border-stone-300 focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                  />
+                </div>
+
+                {/* Commit Action */}
                 <div className="pt-2">
                   <button
                     type="submit"
-                    disabled={isSubmitting || isAnalyzing || Boolean(duplicateWarning)}
-                    className="w-full py-3 px-4 rounded-xl bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white font-bold text-sm shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                    disabled={isSubmitting || !!duplicateWarning}
+                    className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm shadow-md transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 cursor-pointer"
                   >
-                    {isSubmitting ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                        Saving & Broadcasting Notice...
-                      </>
-                    ) : (
-                      <>
-                        <CheckCircle2 className="w-4 h-4" />
-                        Verify & Commit Contribution to Live Ledger
-                      </>
-                    )}
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>{isSubmitting ? 'Recording & Broadcasting...' : 'Verify & Add to Ledger'}</span>
                   </button>
-                  <p className="text-[11px] text-center text-stone-400 mt-2">
-                    Security-enforced: payment slip and reference number verified. All members receive instant notification.
-                  </p>
                 </div>
               </form>
             </div>

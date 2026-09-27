@@ -3,9 +3,11 @@ import { ParseReceiptResult } from './types';
 
 export async function parseReceiptWithClientGemini(
   imageBase64: string,
-  mimeType: string = 'image/jpeg'
+  mimeType: string = 'image/jpeg',
+  manualApiKey?: string
 ): Promise<ParseReceiptResult> {
   const apiKey =
+    manualApiKey ||
     (import.meta as any).env?.VITE_GEMINI_API_KEY ||
     (typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) ||
     '';

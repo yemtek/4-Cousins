@@ -9,6 +9,17 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Permissive CORS middleware so Netlify, mobile apps, and other frontends can call Gemini AI
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 // Body parser with larger payload support for receipt photos / base64 images
 app.use(express.json({ limit: '25mb' }));
 
@@ -46,7 +57,7 @@ Extract the following information accurately:
 4. date: The transaction date formatted strictly as "YYYY-MM-DD" (e.g. "2026-09-27"). If only day/month given, assume current year 2026.
 5. time: The transaction time formatted as "HH:mm" (e.g. "14:35" or "09:20"). If 12-hour AM/PM format, convert to 24-hour "HH:mm". If not detected on the receipt, return "".
 6. paymentMethod: Type of payment or bank/platform if visible (e.g., "OPAY", "GTBank", "Bank Transfer", "Mobile Money", "Zelle", "Wire").
-7. referenceNumber: The transaction reference number, session ID, transaction ref, or receipt number.
+7. referenceNumber: The transaction reference number, session ID, transaction ref, or receipt number. This is crucial for verifying against duplicate submissions.
 8. confidenceNotes: Brief explanation of what was found (e.g., "Sender identified as Babatunde Adeleke. Amount ₦50,000 confirmed.").
 
 If an exact field is missing, provide your best reasonable inference or empty string.`;

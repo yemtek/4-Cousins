@@ -6,6 +6,13 @@ import firebaseConfig from '../firebase-applet-config.json';
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
 // Use the specific firestoreDatabaseId provided in firebase-applet-config.json
-export const db = initializeFirestore(app, {}, firebaseConfig.firestoreDatabaseId);
+// Enable long-polling auto-detect so network environments like Netlify/proxies connect reliably
+export const db = initializeFirestore(
+  app,
+  {
+    experimentalAutoDetectLongPolling: true,
+  },
+  firebaseConfig.firestoreDatabaseId
+);
 
 export default app;

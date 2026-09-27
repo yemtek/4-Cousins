@@ -2,6 +2,14 @@
   publish = "dist"
   command = "npm run build"
 
+# Proxy the Gemini AI parser to the live Cloud backend so Netlify users don't need API keys
+[[redirects]]
+  from = "/api/*"
+  to = "https://ais-pre-zbwn4ayxntjmy4zfl3cbej-802933229190.europe-west2.run.app/api/:splat"
+  status = 200
+  force = true
+
+# SPA client-side routing fallback
 [[redirects]]
   from = "/*"
   to = "/index.html"

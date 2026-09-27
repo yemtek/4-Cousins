@@ -21,7 +21,6 @@ import {
   subscribeToDisbursements,
   subscribeToNotifications,
   subscribeToAppSettings,
-  clearAllDemoData,
   DEFAULT_CATEGORIES,
 } from './contributionService';
 import { PublicDashboard } from './components/PublicDashboard';
@@ -54,20 +53,6 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
 
   const { isInstallable, isInstalled, install, isIOS } = usePWAInstall();
-
-  // One-time auto-wipe of demo data as requested by the user
-  useEffect(() => {
-    const hasCleanedDemo = localStorage.getItem('4cousins_demo_cleaned_v1');
-    if (!hasCleanedDemo) {
-      clearAllDemoData()
-        .then(() => {
-          localStorage.setItem('4cousins_demo_cleaned_v1', 'true');
-        })
-        .catch((err) => {
-          console.warn('Wiping demo data handled:', err);
-        });
-    }
-  }, []);
 
   // Listen to Firestore real-time collections
   useEffect(() => {
